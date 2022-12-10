@@ -59,8 +59,8 @@
 //! let event = to_event("4pm Doctor's Appointment tomorrow");
 //! let expected_event = Event::new()
 //!     .summary("Doctor's Appointment")
-//!     .starts(Local::today().naive_local().and_hms(16, 0, 0) + Duration::days(1))
-//!     .ends(Local::today().naive_local().and_hms(17, 0,0 ) + Duration::days(1))
+//!     .starts(Local::now().naive_local().and_hms_opt(16, 0, 0).unwrap() + Duration::days(1))
+//!     .ends(Local::now().naive_local().and_hms_opt(17, 0,0 ).unwrap() + Duration::days(1))
 //!     .done();
 //! assert!(equal(event, expected_event));
 //! ```
@@ -85,9 +85,10 @@
 //! ```
 //! 
 
-use chrono::{Date, DateTime, Duration, Local, NaiveDate, NaiveDateTime, NaiveTime, Utc, Weekday};
+use chrono::{DateTime, Duration, Local, NaiveDate, NaiveDateTime, NaiveTime, Utc, Weekday};
 use date_time_parser::DateParser;
 use date_time_parser::TimeParser;
+use icalendar::EventLike;
 use icalendar::{Component, Event};
 use regex::Regex;
 
@@ -146,24 +147,24 @@ enum EventStartAndEndExpr {
 pub fn to_event(text: &str) -> Event {
     let mut e = Event::new();
 
-    let today = Local::today();
+    let today = Local::now();
 
     let expr = to_start_end_expr(text);
 
     match expr {
         EventStartAndEndExpr::Unknown => {
-            e.all_day(today);
+            e.all_day(today.naive_local().date());
         }
         EventStartAndEndExpr::Starts(t) => {
             // default to today
-            let dt = DateTime::<Utc>::from_utc(NaiveDateTime::new(today.naive_utc(), t), Utc);
+            let dt = DateTime::<Utc>::from_utc(NaiveDateTime::new(today.naive_utc().date(), t), Utc);
             dt.with_timezone(&Local);
 
             e.starts(dt);
             e.ends(dt.checked_add_signed(Duration::hours(1)).unwrap()); // end is 1 hour after start
         }
         EventStartAndEndExpr::AllDay(d) => {
-            e.all_day(Date::<Utc>::from_utc(d, Utc));
+            e.all_day(d);
         }
         EventStartAndEndExpr::StartsWithDate(t, d) => {
             let dt = DateTime::<Utc>::from_utc(NaiveDateTime::new(d, t), Utc);
@@ -176,10 +177,10 @@ pub fn to_event(text: &str) -> Event {
         EventStartAndEndExpr::StartsAndEnds(start, end) => {
             // default to today
             let start_dt =
-                DateTime::<Utc>::from_utc(NaiveDateTime::new(today.naive_utc(), start), Utc);
+                DateTime::<Utc>::from_utc(NaiveDateTime::new(today.naive_utc().date(), start), Utc);
             start_dt.with_timezone(&Local);
 
-            let end_dt = DateTime::<Utc>::from_utc(NaiveDateTime::new(today.naive_utc(), end), Utc);
+            let end_dt = DateTime::<Utc>::from_utc(NaiveDateTime::new(today.naive_utc().date(), end), Utc);
             end_dt.with_timezone(&Local);
 
             e.starts(start_dt);
@@ -196,8 +197,8 @@ pub fn to_event(text: &str) -> Event {
             e.ends(end_dt);
         }
         EventStartAndEndExpr::AllDayStartsAndEnds(start, end) => {
-            e.start_date(Date::<Utc>::from_utc(start, Utc));
-            e.end_date(Date::<Utc>::from_utc(end, Utc));
+            e.starts(start);
+            e.ends(end);
         }
     }
 
@@ -340,17 +341,17 @@ fn convert_ical_datetime(e: &Event, key: &str) -> NaiveDateTime {
     fn to_naive_date(date: iso8601::Date) -> NaiveDate {
         match date {
             iso8601::Date::YMD { year, month, day } => {
-                NaiveDate::from_ymd(year, month, day)
+                NaiveDate::from_ymd_opt(year, month, day).unwrap_or(NaiveDate::default())
             }
             iso8601::Date::Week { year, ww, d } => {
                 let mut day = Weekday::Sun;
                 for _ in 0..d {
                     day = day.succ();
                 }
-                NaiveDate::from_isoywd(year, ww, day)
+                NaiveDate::from_isoywd_opt(year, ww, day).unwrap_or(NaiveDate::default())
             }
             iso8601::Date::Ordinal { year, ddd } => {
-                NaiveDate::from_yo(year, ddd)
+                NaiveDate::from_yo_opt(year, ddd).unwrap_or(NaiveDate::default())
             }
         }
     }
@@ -358,13 +359,13 @@ fn convert_ical_datetime(e: &Event, key: &str) -> NaiveDateTime {
         Ok(dt) => {
             NaiveDateTime::new(
                 to_naive_date(dt.date),
-                NaiveTime::from_hms(dt.time.hour, dt.time.minute, dt.time.second))
+                NaiveTime::from_hms_opt(dt.time.hour, dt.time.minute, dt.time.second).unwrap_or(NaiveTime::default()))
         }
         Err(_) => {
             let date = iso8601::date(value).unwrap();
             NaiveDateTime::new(
                 to_naive_date(date),
-                NaiveTime::from_hms(0, 0, 0))
+                NaiveTime::from_hms_opt(0, 0, 0).unwrap_or(NaiveTime::default()))
         }
     }
 }
@@ -476,15 +477,15 @@ mod to_event_tests {
     }
 
     fn ndt_from_ymd(y: i32, m: u32, d: u32) -> NaiveDateTime {
-        NaiveDate::from_ymd(y, m, d).and_hms(0, 0, 0)
+        NaiveDate::from_ymd_opt(y, m, d).unwrap().and_hms_opt(0, 0, 0).unwrap()
     }
 
     fn time_today(h: u32, m: u32, s: u32) -> NaiveDateTime {
-        Local::today().and_hms(h, m, s).naive_local()
+        Local::now().naive_local().with_hour(h).unwrap().with_minute(m).unwrap().with_second(s).unwrap()
     }
 
     fn time_and_date(h: u32, min: u32, s: u32, mon: u32, d: u32, y: i32) -> NaiveDateTime {
-        NaiveDate::from_ymd(y, mon, d).and_hms(h, min, s)
+        NaiveDate::from_ymd_opt(y, mon, d).unwrap().and_hms_opt(h, min, s).unwrap()
     }
 
     #[allow(dead_code)]
@@ -502,7 +503,7 @@ mod to_event_tests {
             } else {
                 duration = Duration::days(diff);
             }
-            return Local::today().and_hms(h, m, 0).naive_local() + duration;
+            return Local::now().naive_local().with_hour(h).unwrap().with_minute(m).unwrap().with_second(0).unwrap() + duration;
         } else if diff == 0 {
             let duration;
             println!("day: {:?}", Local::now().weekday());
@@ -511,7 +512,7 @@ mod to_event_tests {
             } else {
                 duration = Duration::days(7);
             }
-            return Local::today().and_hms(h, m, 0).naive_local() + duration;
+            return Local::now().naive_local().with_hour(h).unwrap().with_minute(m).unwrap().with_second(0).unwrap() + duration;
         } else {
             let pos_diff = 7 + diff;
             let duration;
@@ -520,7 +521,7 @@ mod to_event_tests {
             } else {
                 duration = Duration::days(pos_diff);
             }
-            return Local::today().and_hms(h, m, 0).naive_local() + duration;
+            return Local::now().naive_local().with_hour(h).unwrap().with_minute(m).unwrap().with_second(0).unwrap() + duration;
         }
     }
 
